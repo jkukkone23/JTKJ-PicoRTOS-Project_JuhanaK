@@ -99,6 +99,7 @@ add_subdirectory(examples/hat_imu_cdc_ex)
 add_subdirectory(examples/hello_serial_client)
 add_subdirectory(examples/hello_serial_bidirectional_client)
 # add_subdirectory(examples/hat_imu_display)
+# Kokeilla että vaihtuuko github
 #
 # You can edit it if you want to add new examples
 # ==============================================================================================
