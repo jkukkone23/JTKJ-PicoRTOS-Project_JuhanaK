@@ -89,15 +89,15 @@ add_subdirectory(libs/usb-serial-debug)
 # add_subdirectory(examples/hello_blink_freertos)
 # add_subdirectory(examples/hello_pico)
 # add_subdirectory(examples/hello_freertos)
-add_subdirectory(examples/hello_dual_cdc)
+# add_subdirectory(examples/hello_dual_cdc)
 # add_subdirectory(examples/hello_microphone)
 # add_subdirectory(examples/compilation_errors)
-# add_subdirectory(examples/hello_hat)
+add_subdirectory(examples/hello_hat)
 # add_subdirectory(examples/hat_example)
-add_subdirectory(examples/hat_imu_ex)
-add_subdirectory(examples/hat_imu_cdc_ex)
-add_subdirectory(examples/hello_serial_client)
-add_subdirectory(examples/hello_serial_bidirectional_client)
+# add_subdirectory(examples/hat_imu_ex)
+# add_subdirectory(examples/hat_imu_cdc_ex)
+# add_subdirectory(examples/hello_serial_client)
+# add_subdirectory(examples/hello_serial_bidirectional_client)
 # add_subdirectory(examples/hat_imu_display)
 # Kokeilla että vaihtuuko github
 #
@@ -127,6 +127,11 @@ target_link_libraries(${MAIN_TARGET}
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
         TKJHAT_SDK
+)
+
+# Ensure our headers are available to the compiler
+target_include_directories(${MAIN_TARGET} PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
 # Include libraries necessaries to control the WiFi. If you are using the internal pico LED in W model, it is also 
