@@ -8,6 +8,10 @@
 #include <queue.h>
 #include <task.h>
 
+#ifndef pdPASS
+#define pdPASS 1
+#endif
+
 #include "tkjhat/sdk.h"
 
 static void leds_task(void *arg) {
@@ -19,7 +23,7 @@ static void leds_task(void *arg) {
 
     while (1) {
         toggle_led();
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
@@ -36,7 +40,7 @@ static void display_task(void *arg) {
         char buf[5]; //Store a number of maximum 5 figures 
         sprintf(buf,"%d",counter++);
         write_text(buf);
-        vTaskDelay(pdMS_TO_TICKS(4000));
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 
 }
@@ -49,8 +53,8 @@ static void buzzer_task(void *arg) {
     printf("Initializing buzzer\n");
 
     while(1){
-        buzzer_play_tone (440, 500);
-        vTaskDelay(pdMS_TO_TICKS(6000));
+        buzzer_play_tone (445, 300);
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 
