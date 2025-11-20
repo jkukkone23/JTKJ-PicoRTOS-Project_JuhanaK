@@ -20,8 +20,9 @@
 
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX 1 // toinen CDC-rajapinta (debug/tkjhat)
-#define RX_BUFFER_SIZE 128
-#define MAX_RX_LEN 64
+#define RX_BUFFER_SIZE 128 // vastaanottopuskuri koko
+#define MAX_RX_LEN 64 // maksimi pituus vastaanotettavalle viestille
+#define BUFFER_SIZE 100 // imu buffer size
 
 volatile char rx_message[MAX_RX_LEN] = {0}; // globaali puskuri
 volatile bool rx_new = false;               // uusi viesti tullut vai ei, ASETETAAN TRUE KUN UUSI VIESTI
@@ -31,12 +32,13 @@ TaskHandle_t g_hDisplayTaskHandle = NULL;
 TaskHandle_t g_hLedsTaskHandle = NULL;
 
 // Tilakoneen esittely ---- lisää puuttuvat tilat tarvittaessa
-// TILAT: WAITING, eli odotustila
-// COLLECTING, eli viestinkeräystila Pico W:ltä
-// MSG_RECEIVED, eli viesti vastaanotettu tila
-// MSG_PRINT, eli viestin tulostustila (morse-koodina)
-// MSG_PRINTED, eli viestin tulostuksen jälkeinen tila
-// SENT, eli viestinlähetyksen jälkeinen tila, jolloinsoitetaan musiikki
+// TILAT: 
+// WAITING,         eli odotustila
+// COLLECTING,      eli viestinkeräystila Pico W:ltä
+// MSG_RECEIVED,    eli viesti vastaanotettu tila
+// MSG_PRINT,       eli viestin tulostustila (morse-koodina)
+// MSG_PRINTED,     eli viestin tulostuksen jälkeinen tila
+// SENT,            eli viestinlähetyksen jälkeinen tila, jolloinsoitetaan musiikki
 enum state
 {
     WAITING = 1,
@@ -58,6 +60,7 @@ static void leds_task(void *arg);
 static void print_task(void *arg);
 static void btn_fxn(uint gpio, uint32_t eventMask);
 static void usbTask(void *arg);
+void imu_task(void *pvParameters);
 void tud_cdc_rx_cb(uint8_t itf);
 
 // ALLA PÄÄOHJELMA
@@ -65,12 +68,26 @@ void tud_cdc_rx_cb(uint8_t itf);
 
 int main()
 {
-    // Alusta stdio (uart/usb MIEITI MITEN SAAT TOIMIMAAN
-    stdio_init_all();
+
 
     // init_hat_sdk alustaa HATin laitteet
     init_hat_sdk();
     sleep_ms(300); // Wait some time so initialization of hat is done.
+
+    init_led();         // alustaa LEDin
+    init_display();     // jos näyttää I2C:llä
+    init_buzzer();      // alustaa summerin
+    
+    // Alusta IMU tässä (yksi kerrallaan)
+    int r = init_ICM42670();
+    if (r == 0) {
+        usb_serial_print("ICM-42670 init OK\n");
+        ICM42670_start_with_default_values();
+    } else {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "ICM-42670 init FAILED: %d\n", r);
+        usb_serial_print(tmp);
+    }
 
     // Alusta painike ja LED ja rekisteröi vastaava keskeytys tarvittaessa.
     // Keskeytyskäsittelijä on määritelty alapuolella nimellä btn_fxn
@@ -78,6 +95,7 @@ int main()
     TaskHandle_t hBuzzerTaskHandle = NULL;
     TaskHandle_t hPrintTask = NULL;
     TaskHandle_t hUsb = NULL;
+    TaskHandle_t hIMUTask = NULL;
 
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(print_task,         // Task function
@@ -132,6 +150,7 @@ int main()
         return 0;
     }
 
+    xTaskCreate(imu_task, "IMUTask", 1024, NULL, 2, &hIMUTask);
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
 #if (configNUMBER_OF_CORES > 1)
     vTaskCoreAffinitySet(hUsb, 1u << 0);
@@ -171,9 +190,6 @@ static void leds_task(void *arg)
 {
     (void)arg;
 
-    // Initialize LED (uses HAT SDK or pico functions inside)
-    init_led();
-    usb_serial_print("Initializing on board led\n");
 
     while (1)
     {
@@ -193,8 +209,6 @@ static void display_task(void *arg)
 {
     (void)arg;
 
-    init_display();
-    usb_serial_print("Initializing display\n");
     static int counter = 0;
 
     while (1)
@@ -207,18 +221,28 @@ static void display_task(void *arg)
     }
 }
 
-// ---- Task for buzzer----
-//
-// TÄLLÄ TEHTÄVÄLLÄ SOITETAAN MUSIIKKIA KUN VIESTI ON VASTAANOTETTU TAI LÄHETETTY
-// HOITAA MYÖS MUUTAMAN TULOSTUKSEN SAMALLA; KUN VIESTI ON SAAPUNUT TAI LOPPUU
-// SOITETAAN MISSION IMPOSSIBLE
-// JOS VIESTI ON LÄHETETTY LAITTEELTA, SOITETAAN HYVÄT PAHAT JA RUMAT TEEMA
+/**
+ * @brief Summeritehtävä ilmoituksia ja melodioita varten.
+ *
+ * Tämä FreeRTOS-tehtävä tarkkailee ohjelman tilaa (programState)
+ * ja soittaa sopivia melodioita summerilla. Lisäksi se ohjaa LED:iä
+ * ja näyttöä melodian aikana.
+ *
+ * Käyttäytyminen:
+ * - Kun programState on MSG_RECEIVED tai MSG_PRINTED, soitetaan
+ *   "Mission Impossible" -melodia LED- ja näyttöpalautteen kanssa.
+ * - Kun programState on SENT, soitetaan "Hyvät, Pahat ja Rumat" -melodia.
+ * - Melodiaa ennen LED/ näyttötehtävät keskeytetään
+ *   ja sen jälkeen programState päivitetään ja LED-/näyttötehtävät
+ *   palautetaan toimintaan.
+ *
+ * @param arg Käyttämätön parametri, vaaditaan FreeRTOS-tehtävän prototyypin mukaan.
+ */
+
 static void buzzer_task(void *arg)
 {
     (void)arg;
 
-    init_buzzer();
-    usb_serial_print("Initializing buzzer\n");
 
     // "Hyvät, pahat ja rumat" -teemamusiikin lyhyt intro
     const uint32_t notes[] = {440, 587, 440, 587, 440, 349, 392, 293};
@@ -306,6 +330,15 @@ static void buzzer_task(void *arg)
         // Tarkkaile tilaa
         if (programState == SENT)
         {
+            if (g_hDisplayTaskHandle)
+                vTaskSuspend(g_hDisplayTaskHandle);
+            if (g_hLedsTaskHandle)
+                vTaskSuspend(g_hLedsTaskHandle);
+
+            // ennen toistoa: keskeytä display ja leds taskit, jotta ne eivät piirrä tai välkytä
+            clear_display(); // tyhjennetään näyttö
+            write_text(" MSG SENT"); // näytetään merkki MELODIAN AJAKSI
+
             // Soita "HYVÄT PAHAT JA RUMAT" melodian alku
             for (size_t i = 0; i < count; i++)
             {
@@ -321,6 +354,12 @@ static void buzzer_task(void *arg)
 
             // palautetaan tila lähtöön
             programState = WAITING;
+
+            // palautetaan display ja leds toimintaan
+            if (g_hDisplayTaskHandle)
+                vTaskResume(g_hDisplayTaskHandle);
+            if (g_hLedsTaskHandle)
+                vTaskResume(g_hLedsTaskHandle);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // pollataan tila 10 kertaa sekunnissa
@@ -342,10 +381,17 @@ static void btn_fxn(uint gpio, uint32_t eventMask)
     toggle_led();
 }
 
-// ---- Task for buzzer----
-//
-// TÄMÄ TEHTÄVÄ TULOSTAA KONEELTA VASTAANOTETUN VIESTIN MORSE-KOODINA LAITTEELLE
-// MERKKI KERRALLAAN JA SOITTAA SEN MYÖS SEKÄ SUMMERILLA ETTÄ LEDILLÄ
+/**
+ * @brief Viestin tulostustehtävä morsekoodina.
+ *
+ * Tämä FreeRTOS-tehtävä tarkistaa, onko saapunut uusi viesti (rx_new)
+ * ja tulostaa sen merkkikerrallaan morsekoodina:
+ * - Summeri ja LED vilkkuvat morsekoodin mukaan.
+ * - Näyttö näyttää symbolin keskellä koko merkin ajan.
+ * - Kun viesti on tulostettu, programState päivitetään MSG_PRINTED-tilaan.
+ *
+ * @param arg Käyttämätön parametri, vaaditaan FreeRTOS-tehtävän prototyypin mukaan.
+ */
 
 static void print_task(void *arg)
 {
@@ -356,9 +402,6 @@ static void print_task(void *arg)
     const uint32_t dash_ms = 3 * unit_ms; // viivan kesto
     const uint32_t freq_hz = 600;         // buzzer-taajuus
 
-    // Laitteiden alustukset
-    init_buzzer();
-    init_led();
 
     while (1)
     {
@@ -476,9 +519,56 @@ static void print_task(void *arg)
     }
 }
 
-// ---- USB CDC RX callback ----
-// TÄMÄ KUTSUTAAN KUN USB CDC RAJAPINTAAN TULEE DATAA
-// ELI KUN KONEELTA ON LÄHETETTY VIESTI LAITTEELLE
+void imu_task(void *pvParameters) {
+    (void)pvParameters;
+
+    
+    float ax, ay, az, gx, gy, gz, t;
+    /*// Setting up the sensor. 
+    if (init_ICM42670() == 0) {
+        usb_serial_print("ICM-42670P initialized successfully!\n");
+        if (ICM42670_start_with_default_values() != 0){
+            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
+        }
+        /*int _enablegyro = ICM42670_enable_accel_gyro_ln_mode();
+        usb_serial_print ("Enable gyro: %d\n",_enablegyro);
+        int _gyro = ICM42670_startGyro(ICM42670_GYRO_ODR_DEFAULT, ICM42670_GYRO_FSR_DEFAULT);
+        usb_serial_print ("Gyro return:  %d\n", _gyro);
+        int _accel = ICM42670_startAccel(ICM42670_ACCEL_ODR_DEFAULT, ICM42670_ACCEL_FSR_DEFAULT);
+        usb_serial_print ("Accel return:  %d\n", _accel);
+    } else {
+        usb_serial_print("Failed to initialize ICM-42670P.\n");
+    }
+        */
+
+    // Start collection data here. Infinite loop. 
+    uint8_t buf[BUFFER_SIZE];
+    while (1)
+    {
+        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
+            sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
+            usb_serial_print(buf);
+
+        } else {
+            usb_serial_print("Failed to read imu data\n");
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+}
+
+/**
+ * @brief USB CDC -vastaanottokäsittelijä.
+ *
+ * Kutsutaan automaattisesti, kun dataa saapuu USB CDC -rajapintaan.
+ * - Vastaanottaa tavut puskurille, kunnes rivinvaihto '\n' saapuu.
+ * - Kopioi viestin globaaliin muuttujaan rx_message.
+ * - Asettaa lipun rx_new merkiksi uudesta viestistä.
+ * - Päivittää programState arvoksi MSG_RECEIVED.
+ * - Lähettää takaisin "OK" -vastauksen USB:n yli.
+ *
+ * @param itf CDC-rajapinnan indeksi
+ */
 
 void tud_cdc_rx_cb(uint8_t itf)
 {
