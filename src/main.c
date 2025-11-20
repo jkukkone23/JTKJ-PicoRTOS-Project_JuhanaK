@@ -63,7 +63,6 @@ void tud_cdc_rx_cb(uint8_t itf);
 // ALLA PÄÄOHJELMA
 // TÄMÄ OHJELMA TOTEUTTAA MORSE-KOODIN LÄHETTÄMISTÄ PICO W:LTÄ TIETOKONEELLE JA TAKAISIN
 
-
 int main()
 {
     // Alusta stdio (uart/usb MIEITI MITEN SAAT TOIMIMAAN
@@ -211,7 +210,7 @@ static void display_task(void *arg)
 // ---- Task for buzzer----
 //
 // TÄLLÄ TEHTÄVÄLLÄ SOITETAAN MUSIIKKIA KUN VIESTI ON VASTAANOTETTU TAI LÄHETETTY
-// HOITAA MYÖS MUUTAMAN TULOSTUKSEN SAMALLA; KUN VIESTI ON SAAPUNUT TAI LOPPUU 
+// HOITAA MYÖS MUUTAMAN TULOSTUKSEN SAMALLA; KUN VIESTI ON SAAPUNUT TAI LOPPUU
 // SOITETAAN MISSION IMPOSSIBLE
 // JOS VIESTI ON LÄHETETTY LAITTEELTA, SOITETAAN HYVÄT PAHAT JA RUMAT TEEMA
 static void buzzer_task(void *arg)
@@ -227,13 +226,17 @@ static void buzzer_task(void *arg)
     const size_t count = sizeof(notes) / sizeof(notes[0]);
     // "HYVÄT, PAHAT JA RUMAT" -teemamusiikin lyhyt intro LOPPUU
 
-    // "MISIION IMPOSSIBLE" -teemamusiikin lyhyt intro
-    const uint32_t notes_M_I[] = {196, 0, 196, 233, 261, 0, 196, 196, 174, 185};
+    // "MISIION IMPOSSIBLE" -teemamusiikin lyhyt intro ALKUSOITTO
+    const uint32_t notes_M_I[] = {196, 0, 196, 233, 261, 196, 0, 196, 175, 185};
     const uint32_t durs_M_I[] = {300, 150, 450, 300, 300, 300, 150, 450, 300, 300};
     const size_t count_M_I = sizeof(notes_M_I) / sizeof(notes_M_I[0]);
-    // "MISSION IMPOSSIBLE" -teemamusiikin lyhyt intro LOPPUU
+    // "MISSION IMPOSSIBLE" -teemamusiikin lyhyt intro ALKUSOITTO
 
-
+    // "MISIION IMPOSSIBLE" -teemamusiikin lyhyt intro LOPPUSOITTO
+    const uint32_t notes_M_I_2[] = {880, 698, 587, 880, 698, 554, 880, 698, 523, 466, 523};
+    const uint32_t durs_M_I_2[] = {150, 150, 1500, 150, 150, 1500, 150, 150, 1500, 150, 150};
+    const size_t count_M_I_2 = sizeof(notes_M_I_2) / sizeof(notes_M_I_2[0]);
+    // "MISSION IMPOSSIBLE" -teemamusiikin lyhyt intro LOPPUSOITTO
 
     while (1)
     {
@@ -245,25 +248,41 @@ static void buzzer_task(void *arg)
                 vTaskSuspend(g_hDisplayTaskHandle);
             if (g_hLedsTaskHandle)
                 vTaskSuspend(g_hLedsTaskHandle);
-            
-            clear_display(); //tyhjennetään näyttö
-            if (programState == MSG_RECEIVED)
-                write_text("VIESTI"); //näytetään merkki MELODIAN AJAKSI
-            else if (programState == MSG_PRINTED)
-            write_text("OVER"); //näytetään merkki MELODIAN AJAKSI
+
+            clear_display(); // tyhjennetään näyttö
 
             set_led_status(true); // laitetaan led päälle myös MELODIAN ajaksi
-            
-            // Soita "HYVÄT PAHAT JA RUMAT" melodian alku
-            for (size_t i = 0; i < count_M_I; i++)
+
+            if (programState == MSG_RECEIVED)
             {
-                if (notes_M_I[i] == 0)
+                write_text("VIESTI"); // näytetään merkki MELODIAN AJAKSI
+                // Soita "MISSION IMPOSSIBLE" melodian alku
+                for (size_t i = 0; i < count_M_I; i++)
                 {
-                    sleep_ms(durs_M_I[i]); // tauko
+                    if (notes_M_I[i] == 0)
+                    {
+                        sleep_ms(durs_M_I[i]); // tauko
+                    }
+                    else
+                    {
+                        buzzer_play_tone(notes_M_I[i], durs_M_I[i]);
+                    }
                 }
-                else
+            }
+            else if (programState == MSG_PRINTED)
+            {
+                write_text("OVER"); // näytetään merkki MELODIAN AJAKSI
+                // Soita "MISSION IMPOSSIBLE" melodian alku
+                for (size_t i = 0; i < count_M_I_2; i++)
                 {
-                    buzzer_play_tone(notes_M_I[i], durs_M_I[i]);
+                    if (notes_M_I_2[i] == 0)
+                    {
+                        sleep_ms(durs_M_I_2[i]); // tauko
+                    }
+                    else
+                    {
+                        buzzer_play_tone(notes_M_I_2[i], durs_M_I_2[i]);
+                    }
                 }
             }
 
@@ -273,9 +292,9 @@ static void buzzer_task(void *arg)
 
             // MELODIAN jälkeen vaihdetaan tila printattavaksi jos MSG_RECEIVED
             if (programState == MSG_RECEIVED)
-            programState = MSG_PRINT;
+                programState = MSG_PRINT;
             else
-            programState = WAITING;
+                programState = WAITING;
 
             // palautetaan display ja leds toimintaan
             if (g_hDisplayTaskHandle)
@@ -396,8 +415,8 @@ static void print_task(void *arg)
                     sym[0] = c;
                 } // jos jotain muuta
 
-                ///Näytä symboli keskellä
-                
+                /// Näytä symboli keskellä
+
                 write_text(sym);
 
                 /* Toista symboli (buzzer + LED) ja pidä näyttö siinä tilassa koko merkin ajan */
@@ -440,7 +459,6 @@ static void print_task(void *arg)
                     /* tuntematon merkki esim ääkkönen -> pieni tauko */
                     vTaskDelay(pdMS_TO_TICKS(unit_ms));
                 }
-
             }
             // palautetaan display ja leds toimintaan
             if (g_hDisplayTaskHandle)
@@ -460,7 +478,7 @@ static void print_task(void *arg)
 
 // ---- USB CDC RX callback ----
 // TÄMÄ KUTSUTAAN KUN USB CDC RAJAPINTAAN TULEE DATAA
-//ELI KUN KONEELTA ON LÄHETETTY VIESTI LAITTEELLE
+// ELI KUN KONEELTA ON LÄHETETTY VIESTI LAITTEELLE
 
 void tud_cdc_rx_cb(uint8_t itf)
 {
