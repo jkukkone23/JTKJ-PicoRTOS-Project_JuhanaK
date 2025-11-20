@@ -210,10 +210,10 @@ static void display_task(void *arg)
 
 // ---- Task for buzzer----
 //
-// TÄLLÄ TEHTÄVÄLLÄ SOITETAAN ÄÄNIÄ/MUSIIKKIA KUN VIESTI ON VASTAANOTETTU TAI LÄHETETTY
+// TÄLLÄ TEHTÄVÄLLÄ SOITETAAN MUSIIKKIA KUN VIESTI ON VASTAANOTETTU TAI LÄHETETTY
 // HOITAA MYÖS MUUTAMAN TULOSTUKSEN SAMALLA; KUN VIESTI ON SAAPUNUT TAI LOPPUU 
-// SOITETAAN PITKÄ ÄÄNI
-// JOS VIESTI ON LÄHETETTY LAITTEELTA, SOITETAAN LYHYT MELODIAN ALKU
+// SOITETAAN MISSION IMPOSSIBLE
+// JOS VIESTI ON LÄHETETTY LAITTEELTA, SOITETAAN HYVÄT PAHAT JA RUMAT TEEMA
 static void buzzer_task(void *arg)
 {
     (void)arg;
@@ -223,12 +223,21 @@ static void buzzer_task(void *arg)
 
     // "Hyvät, pahat ja rumat" -teemamusiikin lyhyt intro
     const uint32_t notes[] = {440, 587, 440, 587, 440, 349, 392, 293};
-    const uint32_t durs[] = {150, 150, 150, 150, 900, 600, 600, 1200};
+    const uint32_t durs[] = {150, 150, 150, 150, 1200, 600, 600, 1500};
     const size_t count = sizeof(notes) / sizeof(notes[0]);
+    // "HYVÄT, PAHAT JA RUMAT" -teemamusiikin lyhyt intro LOPPUU
+
+    // "MISIION IMPOSSIBLE" -teemamusiikin lyhyt intro
+    const uint32_t notes_M_I[] = {196, 0, 196, 233, 261, 0, 196, 196, 174, 185};
+    const uint32_t durs_M_I[] = {300, 150, 450, 300, 300, 300, 150, 450, 300, 300};
+    const size_t count_M_I = sizeof(notes_M_I) / sizeof(notes_M_I[0]);
+    // "MISSION IMPOSSIBLE" -teemamusiikin lyhyt intro LOPPUU
+
+
 
     while (1)
     {
-        // ---- Pitkä piippaus kun viesti vastaanotettu ja toistettu ----
+        // ---- MISSION IMPOSSIBLE TEEMA, KUN VIESTI SAAPUNUT/ TULOSTETTU ----
         if (programState == MSG_RECEIVED || programState == MSG_PRINTED)
         {
             // ennen toistoa: keskeytä display ja leds taskit, jotta ne eivät piirrä tai välkytä
@@ -239,17 +248,30 @@ static void buzzer_task(void *arg)
             
             clear_display(); //tyhjennetään näyttö
             if (programState == MSG_RECEIVED)
-                write_text("VIESTI"); //näytetään merkki piippauksen ajaksi
+                write_text("VIESTI"); //näytetään merkki MELODIAN AJAKSI
             else if (programState == MSG_PRINTED)
-            write_text("OVER"); //näytetään merkki piippauksen ajaksi
+            write_text("OVER"); //näytetään merkki MELODIAN AJAKSI
 
-            set_led_status(true); // laitetaan led päälle myös piippauksen ajaksi
-            buzzer_play_tone(600, 3000); // 3 sek pitkä ääni sekä saapuvan, että toistetun viestin jälkeen
+            set_led_status(true); // laitetaan led päälle myös MELODIAN ajaksi
+            
+            // Soita "HYVÄT PAHAT JA RUMAT" melodian alku
+            for (size_t i = 0; i < count_M_I; i++)
+            {
+                if (notes_M_I[i] == 0)
+                {
+                    sleep_ms(durs_M_I[i]); // tauko
+                }
+                else
+                {
+                    buzzer_play_tone(notes_M_I[i], durs_M_I[i]);
+                }
+            }
+
             set_led_status(false);
 
-            clear_display(); // tyhjennä näyttö piippauksen jälkeen
+            clear_display(); // tyhjennä näyttö MELODIAN jälkeen
 
-            // Pitkän piippauksen jälkeen vaihdetaan tila printattavaksi jos MSG_RECEIVED
+            // MELODIAN jälkeen vaihdetaan tila printattavaksi jos MSG_RECEIVED
             if (programState == MSG_RECEIVED)
             programState = MSG_PRINT;
             else
@@ -265,7 +287,7 @@ static void buzzer_task(void *arg)
         // Tarkkaile tilaa
         if (programState == SENT)
         {
-            // Soita melodian alku
+            // Soita "HYVÄT PAHAT JA RUMAT" melodian alku
             for (size_t i = 0; i < count; i++)
             {
                 if (notes[i] == 0)
@@ -276,7 +298,6 @@ static void buzzer_task(void *arg)
                 {
                     buzzer_play_tone(notes[i], durs[i]);
                 }
-                sleep_ms(30); // pieni väli
             }
 
             // palautetaan tila lähtöön
