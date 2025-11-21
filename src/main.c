@@ -23,11 +23,7 @@
 #define RX_BUFFER_SIZE 128 // vastaanottopuskuri koko
 #define MAX_RX_LEN 64      // maksimi pituus vastaanotettavalle viestille
 #define BUFFER_SIZE 100    // imu buffer size
-
-volatile char rx_message[MAX_RX_LEN] = {0}; // globaali puskuri
-volatile bool rx_new = false;               // uusi viesti tullut vai ei, ASETETAAN TRUE KUN UUSI VIESTI
-
-
+#define MORSE_BUF_SIZE 128 // MORSE viestin bufferi
 
 // Tilakoneen esittely ---- lisää puuttuvat tilat tarvittaessa
 // TILAT:
@@ -51,12 +47,17 @@ enum state
 };
 enum state programState = WAITING;
 
+volatile char rx_message[MAX_RX_LEN] = {0}; // globaali puskuri
+volatile bool rx_new = false;               // uusi viesti tullut vai ei, ASETETAAN TRUE KUN UUSI VIESTI
 static char rx_buffer[RX_BUFFER_SIZE];
 static size_t rx_index = 0;
+static char morse_buf[MORSE_BUF_SIZE];
+static size_t morse_idx = 0;
+const uint32_t MORSE_FREQ_HZ = 600;    // käytä soveltuvaa taajuutta
+volatile bool button2_pressed = false; // asetetaan BUTTON2 ISR:ssä
 
 // Tehtävien määrittelyt prototyyppinä
 static void buzzer_task(void *arg);
-static void display_task(void *arg);
 static void print_task(void *arg);
 static void btn_fxn(uint gpio, uint32_t eventMask);
 static void usbTask(void *arg);
@@ -79,9 +80,11 @@ int main()
 
     // Alusta painike ja LED ja rekisteröi vastaava keskeytys tarvittaessa.
     // Keskeytyskäsittelijä on määritelty alapuolella nimellä btn_fxn
-    gpio_init(BUTTON1); 
-    gpio_set_dir(BUTTON1, GPIO_IN); 
-    gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
+    gpio_init(BUTTON1);
+    gpio_init(BUTTON2);
+
+    gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL, true, btn_fxn);
+    gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL, true);
 
     TaskHandle_t hBuzzerTaskHandle = NULL;
     TaskHandle_t hPrintTask = NULL;
@@ -239,7 +242,6 @@ static void buzzer_task(void *arg)
                 programState = MSG_PRINT;
             else
                 programState = WAITING;
-
         }
 
         // Tarkkaile tilaa
@@ -265,7 +267,13 @@ static void buzzer_task(void *arg)
 
             // palautetaan tila lähtöön
             programState = WAITING;
+        }
 
+        // tänne päädytään jos lähetysnappia on painettu
+        if (programState == MORSE_MSG_READY)
+        {
+            clear_display();
+            buzzer_play_tone(220, 2000);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // pollataan tila 10 kertaa sekunnissa
@@ -291,7 +299,6 @@ static void print_task(void *arg)
     const uint32_t unit_ms = 100;         // perusyksikkö morse-ajalle, haettu netistä nämä(säädä tarpeen mukaan)
     const uint32_t dot_ms = unit_ms;      // pisteen kesto
     const uint32_t dash_ms = 3 * unit_ms; // viivan kesto
-    const uint32_t freq_hz = 600;         // buzzer-taajuus
 
     while (1)
     {
@@ -309,7 +316,6 @@ static void print_task(void *arg)
 
             // Tyhjennä lipuke heti (estää uudelleenkäsittelyn)
             rx_new = false;
-
 
             // Tyhjennä näyttö
             clear_display();
@@ -351,14 +357,14 @@ static void print_task(void *arg)
                 if (c == '.')
                 {
                     set_led_status(true);
-                    buzzer_play_tone(freq_hz, dot_ms); // soittaa dot_ms aikaa
+                    buzzer_play_tone(MORSE_FREQ_HZ, dot_ms); // soittaa dot_ms aikaa
                     set_led_status(false);
                     vTaskDelay(pdMS_TO_TICKS(unit_ms));
                 }
                 else if (c == '-')
                 {
                     set_led_status(true);
-                    buzzer_play_tone(freq_hz, dash_ms); // soittaa dash_ms aikaa
+                    buzzer_play_tone(MORSE_FREQ_HZ, dash_ms); // soittaa dash_ms aikaa
                     set_led_status(false);
                     vTaskDelay(pdMS_TO_TICKS(unit_ms));
                 }
@@ -402,14 +408,15 @@ static void print_task(void *arg)
 // ---- Painikkeen keskeytyskäsittelijä ----
 // Painiketta painettaessa vaihdetaan tila WAITING -> COLLECTING
 
-static void btn_fxn(uint gpio, uint32_t eventMask){
-    (void)gpio;
-    (void)eventMask;
-
-    // Painnikkeen havaittua muutetaan laitteen tilaa SWITCH rakenteen avulla
-
-    switch (programState)
+static void btn_fxn(uint gpio, uint32_t events)
+{
+    if (gpio == BUTTON1 && (events & GPIO_IRQ_EDGE_FALL))
     {
+
+        // Painnikkeen 1 havaittua muutetaan laitteen tilaa SWITCH rakenteen avulla
+
+        switch (programState)
+        {
         case WAITING:
             programState = COLLECTING;
             break;
@@ -419,9 +426,15 @@ static void btn_fxn(uint gpio, uint32_t eventMask){
             break;
 
         default:
-        programState = WAITING;
+            programState = WAITING;
             // muissa tiloissa nappi keskeyttää toiminnan ja palauttaa WAITING-tilaan
             break;
+        }
+    }
+
+    if (gpio == BUTTON2 && (events & GPIO_IRQ_EDGE_FALL))
+    {
+        button2_pressed = true;
     }
 }
 
@@ -470,52 +483,157 @@ void imu_task(void *pvParameters)
     {
         if (programState == COLLECTING)
         {
+            clear_display;
+            write_text("MORSENOW"); // KIRJOITETAAN NÄYTTÖÖN MITÄ TEHDÄÄN
+
+            // (1) Käsittele BUTTON2-lippu (painike): lisää välilyönti
+            if (button2_pressed)
+            {
+                // suojaa puskuriin lisäys
+                if (morse_idx < MORSE_BUF_SIZE - 1)
+                {
+                    morse_buf[morse_idx++] = ' ';
+                    morse_buf[morse_idx] = '\0';
+                }
+
+                // indikointi: näytölle " " (tai "SP"), led ja lyhyt summeri
+                clear_display();
+                write_text(" "); // tai write_text("SP") jos haluat näkyvän
+                set_led_status(true);
+                buzzer_play_tone(MORSE_FREQ_HZ, 100);
+                set_led_status(false);
+                // nollaa lipun (tehdään taskissa)
+                button2_pressed = false;
+
+                // pieni palautumisviive / debounce
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+
+            // Lue sensori
             int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
             if (rr == 0)
             {
-
-                // Tulosta kelvolliset arvot
-                snprintf(outbuf, sizeof(outbuf),
-                         "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Temp: %.2f°C\n",
-                         ax, ay, az, gx, gy, gz, temp);
-                usb_serial_print(outbuf);
-                // nollaa epäonnistumislaskuri onnistuneen lukemisen jälkeen
-                read_fail_count = 0;
-            }
-            else
-            {
-                // Lukeminen epäonnistui: kirjaa ja kasvata laskuria
-                snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
-                usb_serial_print(outbuf);
-                read_fail_count++;
-            }
-
-            // Jos lukemisia epäonnistuu liian monta kertaa peräkkäin, yritä uudelleen-init
-            if (read_fail_count >= READ_FAIL_MAX)
-            {
-                usb_serial_print("Multiple IMU read failures, attempting re-init\n");
-                int r = init_ICM42670();
-                if (r == 0)
+                // Jos Z > 1.2 -> piste (dot)
+                if (az > 1.2f)
                 {
-                    usb_serial_print("ICM re-init OK\n");
-                    if (ICM42670_start_with_default_values() != 0)
+                    // lisää piste puskuriin jos tilaa
+                    if (morse_idx < MORSE_BUF_SIZE - 1)
                     {
-                        usb_serial_print("ICM42670_start_with_default_values returned non-zero after re-init\n");
+                        morse_buf[morse_idx++] = '.';
+                        morse_buf[morse_idx] = '\0';
                     }
-                    read_fail_count = 0; // nollaa laskuri jos re-init onnistuu
+
+                    // Näytölle ja summerille + LED
+                    clear_display();
+                    write_text(".");
+                    set_led_status(true);
+                    buzzer_play_tone(MORSE_FREQ_HZ, 100); // 100 ms
+                    set_led_status(false);
+
+                    // inter-element gap (1 unit)
+                    vTaskDelay(pdMS_TO_TICKS(100));
+
+                    // debounce: odotetaan kunnes z laskee alle esim. 1.05 tai annettu timeout
+                    const uint32_t dot_timeout_ms = 600;
+                    uint32_t waited = 0;
+                    while (az > 1.05f && waited < dot_timeout_ms)
+                    {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        waited += 50;
+                        // päivitä az: luetaan uudelleen
+                        (void)ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
+                    }
                 }
+                // Jos X > 0.2 -> viiva (dash)
+                else if (ax > 0.2f)
+                {
+                    // lisää viiva puskuriin jos tilaa
+                    if (morse_idx < MORSE_BUF_SIZE - 1)
+                    {
+                        morse_buf[morse_idx++] = '-';
+                        morse_buf[morse_idx] = '\0';
+                    }
+
+                    // Näytölle ja summerille + LED: dash = 3 * 100ms ON (yhteensä ~300ms)
+                    clear_display();
+                    write_text("-");
+                    set_led_status(true);
+                    // soitetaan 3 * 100ms pätkä välissä 100ms tauolla
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        buzzer_play_tone(MORSE_FREQ_HZ, 100);
+                        // pieni tauko elementtien välillä (1 unit)
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    set_led_status(false);
+
+                    // inter-element gap (jo hoidettu yllä osittain) mutta varmistus
+                    vTaskDelay(pdMS_TO_TICKS(100));
+
+                    // debounce odotetaan kunnes x laskee alle esim. 0.15 tai annettu timeout
+                    const uint32_t dash_timeout_ms = 800;
+                    uint32_t waited = 0;
+                    while (ax > 0.15f && waited < dash_timeout_ms)
+                    {
+                        vTaskDelay(pdMS_TO_TICKS(50));
+                        waited += 50;
+                        // päivitä ax
+                        (void)ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
+                    }
+                }
+
+                /*
+
+                int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
+                if (rr == 0)
+                {
+
+                    // Tulosta kelvolliset arvot
+                    snprintf(outbuf, sizeof(outbuf),
+                             "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Temp: %.2f°C\n",
+                             ax, ay, az, gx, gy, gz, temp);
+                    usb_serial_print(outbuf);
+                    // nollaa epäonnistumislaskuri onnistuneen lukemisen jälkeen
+                    read_fail_count = 0;
+                }
+
+                */
+
                 else
                 {
-                    char tmp[64];
-                    snprintf(tmp, sizeof(tmp), "ICM re-init failed (ret=%d) -> retrying later\n", r);
-                    usb_serial_print(tmp);
-                    // odota pidempään ennen seuraavaa re-init yritystä
-                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    // Lukeminen epäonnistui: kirjaa ja kasvata laskuria
+                    snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
+                    usb_serial_print(outbuf);
+                    read_fail_count++;
+                }
+
+                // Jos lukemisia epäonnistuu liian monta kertaa peräkkäin, yritä uudelleen-init
+                if (read_fail_count >= READ_FAIL_MAX)
+                {
+                    usb_serial_print("Multiple IMU read failures, attempting re-init\n");
+                    int r = init_ICM42670();
+                    if (r == 0)
+                    {
+                        usb_serial_print("ICM re-init OK\n");
+                        if (ICM42670_start_with_default_values() != 0)
+                        {
+                            usb_serial_print("ICM42670_start_with_default_values returned non-zero after re-init\n");
+                        }
+                        read_fail_count = 0; // nollaa laskuri jos re-init onnistuu
+                    }
+                    else
+                    {
+                        char tmp[64];
+                        snprintf(tmp, sizeof(tmp), "ICM re-init failed (ret=%d) -> retrying later\n", r);
+                        usb_serial_print(tmp);
+                        // odota pidempään ennen seuraavaa re-init yritystä
+                        vTaskDelay(pdMS_TO_TICKS(2000));
+                    }
                 }
             }
-        }
 
-        vTaskDelay(pdMS_TO_TICKS(500)); // odota ennen seuraavaa lukua
+            vTaskDelay(pdMS_TO_TICKS(100)); // odota ennen seuraavaa lukua
+        }
     }
 }
 
