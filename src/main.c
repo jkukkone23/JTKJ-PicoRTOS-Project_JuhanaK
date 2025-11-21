@@ -81,7 +81,12 @@ int main()
     // Alusta painike ja LED ja rekisteröi vastaava keskeytys tarvittaessa.
     // Keskeytyskäsittelijä on määritelty alapuolella nimellä btn_fxn
     gpio_init(BUTTON1);
+    gpio_set_dir(BUTTON1, GPIO_IN);
+    gpio_pull_up(BUTTON1);
+
     gpio_init(BUTTON2);
+    gpio_set_dir(BUTTON2, GPIO_IN);
+    gpio_pull_up(BUTTON2);
 
     gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_FALL, true, btn_fxn);
     gpio_set_irq_enabled(BUTTON2, GPIO_IRQ_EDGE_FALL, true);
@@ -483,7 +488,7 @@ void imu_task(void *pvParameters)
     {
         if (programState == COLLECTING)
         {
-            clear_display;
+            clear_display();
             write_text("MORSENOW"); // KIRJOITETAAN NÄYTTÖÖN MITÄ TEHDÄÄN
 
             // (1) Käsittele BUTTON2-lippu (painike): lisää välilyönti
