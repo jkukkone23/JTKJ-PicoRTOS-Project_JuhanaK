@@ -50,6 +50,7 @@ static char rx_buffer[RX_BUFFER_SIZE];
 static size_t rx_index = 0;
 const uint32_t MORSE_FREQ_HZ = 600;    // käytä soveltuvaa taajuutta
 volatile bool button2_pressed = false; // asetetaan BUTTON2 ISR:ssä
+bool morseShown = false;               // onko morse viesti näytetty
 
 // Tehtävien määrittelyt prototyyppinä
 static void buzzer_task(void *arg);
@@ -174,7 +175,7 @@ static void buzzer_task(void *arg)
 
     // "Hyvät, pahat ja rumat" -teemamusiikin lyhyt intro
     const uint32_t notes[] = {440, 587, 440, 587, 440, 349, 392, 293};
-    const uint32_t durs[] = {150, 150, 150, 150, 1200, 600, 600, 1500};
+    const uint32_t durs[] = {150, 150, 150, 150, 1200, 600, 600, 1800};
     const size_t count = sizeof(notes) / sizeof(notes[0]);
     // "HYVÄT, PAHAT JA RUMAT" -teemamusiikin lyhyt intro LOPPUU
 
@@ -250,6 +251,8 @@ static void buzzer_task(void *arg)
         // Tarkkaile tilaa
         if (programState == MORSE_MSG_SENT)
         {
+
+            morseShown = false;    // resetoi morseShown lippu seuraavaa keräämistä varten
 
             // ILMOITETAAN SERIAL CLIENTILLE ETTÄ VIESTI LOPPUI
             tud_cdc_n_write(CDC_ITF_TX, (uint8_t const *)"  \n", 3);
@@ -476,12 +479,19 @@ void imu_task(void *pvParameters)
         DASH_STATE
     } motion_state = IDLE;
 
+    // edelliset arvot delta-laskentaa varten
+    float prev_ax = 0, prev_az = 1;
+
     while (1)
     {
         if (programState == COLLECTING)
         {
-            clear_display();
-            write_text("MORSENOW");
+            if (!morseShown)
+            {
+                clear_display();
+                write_text("MORSENOW");
+                morseShown = true;
+            }
 
             // --- Button2 käsittely: välilyönti ---
             if (button2_pressed)
@@ -489,9 +499,7 @@ void imu_task(void *pvParameters)
                 char sym = ' ';
                 clear_display();
                 write_text("SPACE");
-                set_led_status(true);
                 sleep_ms(100);
-                set_led_status(false);
                 clear_display();
 
                 // Lähetä heti CDC0:lle
@@ -513,8 +521,18 @@ void imu_task(void *pvParameters)
                 continue;
             }
 
+            // --- Suodatettu liike ja delta ---
+            float delta_ax = fabs(ax - prev_ax);
+            float delta_az = fabs(az - prev_az);
+            prev_ax = ax;
+            prev_az = az;
+
+            // --- DEBUG: tulosta JOKA KERTA ---
+            snprintf(outbuf, sizeof(outbuf), "ax=%.3f  az=%.3f\n", prev_ax, prev_az);
+            usb_serial_print(outbuf);
+
             // --- DOT tunnistus ---
-            if (az > 1.2f && motion_state == IDLE)
+            if (motion_state == IDLE && delta_az > 0.15f)
             {
                 char sym = '.';
                 clear_display();
@@ -532,17 +550,13 @@ void imu_task(void *pvParameters)
                 motion_state = DOT_STATE;
             }
             // --- DASH tunnistus ---
-            else if (ax > 0.2f && motion_state == IDLE)
+            else if (motion_state == IDLE && delta_ax > 0.15f)
             {
                 char sym = '-';
                 clear_display();
                 write_text("-");
                 set_led_status(true);
-                for (int i = 0; i < 3; i++)
-                {
-                    buzzer_play_tone(MORSE_FREQ_HZ, 100);
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                }
+                buzzer_play_tone(MORSE_FREQ_HZ, 300);  
                 set_led_status(false);
                 clear_display();
 
@@ -557,15 +571,15 @@ void imu_task(void *pvParameters)
             // --- Reset state kun liike loppuu ---
             if (motion_state != IDLE)
             {
-                if ((motion_state == DOT_STATE && az <= 1.05f) ||
-                    (motion_state == DASH_STATE && ax <= 0.15f))
+                if ((motion_state == DOT_STATE && delta_az < 0.02f) ||
+                    (motion_state == DASH_STATE && delta_ax < 0.01f))
                 {
                     motion_state = IDLE;
                     vTaskDelay(pdMS_TO_TICKS(50));
                 }
             }
 
-            vTaskDelay(pdMS_TO_TICKS(50)); // lukunopeus ~20Hz
+            vTaskDelay(pdMS_TO_TICKS(20)); // pieni viive lukujen välillä
         }
         else
         {
