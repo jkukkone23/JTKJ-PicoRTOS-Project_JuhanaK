@@ -48,8 +48,6 @@ volatile char rx_message[MAX_RX_LEN] = {0}; // globaali puskuri
 volatile bool rx_new = false;               // uusi viesti tullut vai ei, ASETETAAN TRUE KUN UUSI VIESTI
 static char rx_buffer[RX_BUFFER_SIZE];
 static size_t rx_index = 0;
-static char morse_buf[MORSE_BUF_SIZE];
-static size_t morse_idx = 0;
 const uint32_t MORSE_FREQ_HZ = 600;    // käytä soveltuvaa taajuutta
 volatile bool button2_pressed = false; // asetetaan BUTTON2 ISR:ssä
 
@@ -252,6 +250,10 @@ static void buzzer_task(void *arg)
         // Tarkkaile tilaa
         if (programState == MORSE_MSG_SENT)
         {
+
+            // ILMOITETAAN SERIAL CLIENTILLE ETTÄ VIESTI LOPPUI
+            tud_cdc_n_write(CDC_ITF_TX, (uint8_t const *)"  \n", 3);
+            tud_cdc_n_write_flush(CDC_ITF_TX);
 
             clear_display();         // tyhjennetään näyttö
             write_text(" MSG SENT"); // näytetään merkki MELODIAN AJAKSI
@@ -485,11 +487,12 @@ void imu_task(void *pvParameters)
             if (button2_pressed)
             {
                 char sym = ' ';
+                clear_display();
+                write_text("SPACE");
                 set_led_status(true);
-                buzzer_play_tone(MORSE_FREQ_HZ, 100);
+                sleep_ms(100);
                 set_led_status(false);
                 clear_display();
-                write_text("SP");
 
                 // Lähetä heti CDC0:lle
                 tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
@@ -519,6 +522,7 @@ void imu_task(void *pvParameters)
                 set_led_status(true);
                 buzzer_play_tone(MORSE_FREQ_HZ, 100);
                 set_led_status(false);
+                clear_display();
 
                 // Lähetä symboli välittömästi
                 tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
@@ -540,6 +544,7 @@ void imu_task(void *pvParameters)
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 set_led_status(false);
+                clear_display();
 
                 // Lähetä symboli välittömästi
                 tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
