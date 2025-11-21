@@ -29,17 +29,14 @@
 // TILAT:
 // WAITING,         eli odotustila, johon laite menee käynnistyessään
 // COLLECTING,      eli viestinkeräystila Pico W:ltä
-// MORSE_MSG_READY  eli morse-viesti on valmis lähetettäväksi koneeseen
 // MSG_RECEIVED,    eli viesti vastaanotettu tila
 // MSG_PRINT,       eli viestin tulostustila (morse-koodina)
 // MSG_PRINTED,     eli viestin tulostuksen jälkeinen tila
-// SENT,            eli viestinlähetyksen jälkeinen tila, jolloinsoitetaan musiikki
+// MORSE_MSG_SENT,            eli viestinlähetyksen jälkeinen tila, jolloinsoitetaan musiikki
 enum state
 {
     WAITING = 1,
     COLLECTING,
-    SYMBOL_DETECTED,
-    MORSE_MSG_READY,
     MSG_RECEIVED,
     MSG_PRINT,
     MSG_PRINTED,
@@ -209,15 +206,18 @@ static void buzzer_task(void *arg)
             {
                 write_text("VIESTI"); // näytetään merkki MELODIAN AJAKSI
                 // Soita "MISSION IMPOSSIBLE" melodian alku
-                for (size_t i = 0; i < count_M_I; i++)
+                for (int i = 0; i < 2; i++)
                 {
-                    if (notes_M_I[i] == 0)
+                    for (size_t j = 0; j < count_M_I; j++)
                     {
-                        sleep_ms(durs_M_I[i]); // tauko
-                    }
-                    else
-                    {
-                        buzzer_play_tone(notes_M_I[i], durs_M_I[i]);
+                        if (notes_M_I[j] == 0)
+                        {
+                            sleep_ms(durs_M_I[j]); // tauko
+                        }
+                        else
+                        {
+                            buzzer_play_tone(notes_M_I[j], durs_M_I[j]);
+                        }
                     }
                 }
             }
@@ -253,7 +253,6 @@ static void buzzer_task(void *arg)
         if (programState == MORSE_MSG_SENT)
         {
 
-            // ennen toistoa: keskeytä IMU taski, jotta se ei häiritse näyttöä
             clear_display();         // tyhjennetään näyttö
             write_text(" MSG SENT"); // näytetään merkki MELODIAN AJAKSI
 
@@ -272,13 +271,7 @@ static void buzzer_task(void *arg)
 
             // palautetaan tila lähtöön
             programState = WAITING;
-        }
-
-        // tänne päädytään jos lähetysnappia on painettu
-        if (programState == MORSE_MSG_READY)
-        {
-            clear_display();
-            buzzer_play_tone(220, 2000);
+            clear_display(); // tyhjennä näyttö MELODIAN jälkeen
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // pollataan tila 10 kertaa sekunnissa
@@ -427,7 +420,7 @@ static void btn_fxn(uint gpio, uint32_t events)
             break;
 
         case COLLECTING:
-            programState = MORSE_MSG_READY;
+            programState = MORSE_MSG_SENT;
             break;
 
         default:
@@ -453,191 +446,125 @@ void imu_task(void *pvParameters)
     float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, temp = 0;
     char outbuf[128];
 
-    // Alusta anturi toistuvasti kunnes onnistuu
-    int attempt = 0;
+    // Alusta IMU kunnes onnistuu
     while (1)
     {
-        attempt++;
-        snprintf(outbuf, sizeof(outbuf), "ICM init attempt %d\n", attempt);
-        usb_serial_print(outbuf);
-
-        int r = init_ICM42670(); // 0 = ok
+        int r = init_ICM42670();
         if (r == 0)
         {
             usb_serial_print("ICM-42670P initialized successfully!\n");
-            // Käynnistä sensorin oletuskonfiguraatio, jos funktio on käytettävissä
             if (ICM42670_start_with_default_values() != 0)
             {
                 usb_serial_print("ICM42670_start_with_default_values returned non-zero\n");
             }
-            break; // init onnistui -> jatka lukemisia
+            break;
         }
         else
         {
             snprintf(outbuf, sizeof(outbuf), "ICM init failed (ret=%d), retrying in 2s\n", r);
             usb_serial_print(outbuf);
-            vTaskDelay(pdMS_TO_TICKS(2000)); // odottaa ennen uutta yritystä
+            vTaskDelay(pdMS_TO_TICKS(2000));
         }
     }
 
-    // Kun init onnistui, aloitetaan lukusilmukka
-    int read_fail_count = 0;
-    const int READ_FAIL_MAX = 5;
+    enum
+    {
+        IDLE,
+        DOT_STATE,
+        DASH_STATE
+    } motion_state = IDLE;
 
     while (1)
     {
         if (programState == COLLECTING)
         {
             clear_display();
-            write_text("MORSENOW"); // KIRJOITETAAN NÄYTTÖÖN MITÄ TEHDÄÄN
+            write_text("MORSENOW");
 
-            // (1) Käsittele BUTTON2-lippu (painike): lisää välilyönti
+            // --- Button2 käsittely: välilyönti ---
             if (button2_pressed)
             {
-                // suojaa puskuriin lisäys
-                if (morse_idx < MORSE_BUF_SIZE - 1)
-                {
-                    morse_buf[morse_idx++] = ' ';
-                    morse_buf[morse_idx] = '\0';
-                }
-
-                // indikointi: näytölle " " (tai "SP"), led ja lyhyt summeri
-                clear_display();
-                write_text(" "); // tai write_text("SP") jos haluat näkyvän
+                char sym = ' ';
                 set_led_status(true);
                 buzzer_play_tone(MORSE_FREQ_HZ, 100);
                 set_led_status(false);
-                // nollaa lipun (tehdään taskissa)
-                button2_pressed = false;
+                clear_display();
+                write_text("SP");
 
-                // pieni palautumisviive / debounce
+                // Lähetä heti CDC0:lle
+                tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
+                tud_cdc_n_write_flush(CDC_ITF_TX);
+                usb_serial_print("Sent symbol: SPACE\n");
+
+                button2_pressed = false;
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
 
-            // Lue sensori
+            // --- IMU-luku ---
             int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-            if (rr == 0)
+            if (rr != 0)
             {
-                // Jos Z > 1.2 -> piste (dot)
-                if (az > 1.2f)
+                snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
+                usb_serial_print(outbuf);
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
+
+            // --- DOT tunnistus ---
+            if (az > 1.2f && motion_state == IDLE)
+            {
+                char sym = '.';
+                clear_display();
+                write_text(".");
+                set_led_status(true);
+                buzzer_play_tone(MORSE_FREQ_HZ, 100);
+                set_led_status(false);
+
+                // Lähetä symboli välittömästi
+                tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
+                tud_cdc_n_write_flush(CDC_ITF_TX);
+                usb_serial_print("Sent symbol: DOT\n");
+
+                motion_state = DOT_STATE;
+            }
+            // --- DASH tunnistus ---
+            else if (ax > 0.2f && motion_state == IDLE)
+            {
+                char sym = '-';
+                clear_display();
+                write_text("-");
+                set_led_status(true);
+                for (int i = 0; i < 3; i++)
                 {
-                    // lisää piste puskuriin jos tilaa
-                    if (morse_idx < MORSE_BUF_SIZE - 1)
-                    {
-                        morse_buf[morse_idx++] = '.';
-                        morse_buf[morse_idx] = '\0';
-                    }
-
-                    // Näytölle ja summerille + LED
-                    clear_display();
-                    write_text(".");
-                    set_led_status(true);
-                    buzzer_play_tone(MORSE_FREQ_HZ, 100); // 100 ms
-                    set_led_status(false);
-
-                    // inter-element gap (1 unit)
+                    buzzer_play_tone(MORSE_FREQ_HZ, 100);
                     vTaskDelay(pdMS_TO_TICKS(100));
-
-                    // debounce: odotetaan kunnes z laskee alle esim. 1.05 tai annettu timeout
-                    const uint32_t dot_timeout_ms = 600;
-                    uint32_t waited = 0;
-                    while (az > 1.05f && waited < dot_timeout_ms)
-                    {
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        waited += 50;
-                        // päivitä az: luetaan uudelleen
-                        (void)ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-                    }
                 }
-                // Jos X > 0.2 -> viiva (dash)
-                else if (ax > 0.2f)
+                set_led_status(false);
+
+                // Lähetä symboli välittömästi
+                tud_cdc_n_write(CDC_ITF_TX, (uint8_t *)&sym, 1);
+                tud_cdc_n_write_flush(CDC_ITF_TX);
+                usb_serial_print("Sent symbol: DASH\n");
+
+                motion_state = DASH_STATE;
+            }
+
+            // --- Reset state kun liike loppuu ---
+            if (motion_state != IDLE)
+            {
+                if ((motion_state == DOT_STATE && az <= 1.05f) ||
+                    (motion_state == DASH_STATE && ax <= 0.15f))
                 {
-                    // lisää viiva puskuriin jos tilaa
-                    if (morse_idx < MORSE_BUF_SIZE - 1)
-                    {
-                        morse_buf[morse_idx++] = '-';
-                        morse_buf[morse_idx] = '\0';
-                    }
-
-                    // Näytölle ja summerille + LED: dash = 3 * 100ms ON (yhteensä ~300ms)
-                    clear_display();
-                    write_text("-");
-                    set_led_status(true);
-                    // soitetaan 3 * 100ms pätkä välissä 100ms tauolla
-                    for (int i = 0; i < 3; ++i)
-                    {
-                        buzzer_play_tone(MORSE_FREQ_HZ, 100);
-                        // pieni tauko elementtien välillä (1 unit)
-                        vTaskDelay(pdMS_TO_TICKS(100));
-                    }
-                    set_led_status(false);
-
-                    // inter-element gap (jo hoidettu yllä osittain) mutta varmistus
-                    vTaskDelay(pdMS_TO_TICKS(100));
-
-                    // debounce odotetaan kunnes x laskee alle esim. 0.15 tai annettu timeout
-                    const uint32_t dash_timeout_ms = 800;
-                    uint32_t waited = 0;
-                    while (ax > 0.15f && waited < dash_timeout_ms)
-                    {
-                        vTaskDelay(pdMS_TO_TICKS(50));
-                        waited += 50;
-                        // päivitä ax
-                        (void)ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-                    }
-                }
-
-                /*
-
-                int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-                if (rr == 0)
-                {
-
-                    // Tulosta kelvolliset arvot
-                    snprintf(outbuf, sizeof(outbuf),
-                             "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Temp: %.2f°C\n",
-                             ax, ay, az, gx, gy, gz, temp);
-                    usb_serial_print(outbuf);
-                    // nollaa epäonnistumislaskuri onnistuneen lukemisen jälkeen
-                    read_fail_count = 0;
-                }
-
-                */
-
-                else
-                {
-                    // Lukeminen epäonnistui: kirjaa ja kasvata laskuria
-                    snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
-                    usb_serial_print(outbuf);
-                    read_fail_count++;
-                }
-
-                // Jos lukemisia epäonnistuu liian monta kertaa peräkkäin, yritä uudelleen-init
-                if (read_fail_count >= READ_FAIL_MAX)
-                {
-                    usb_serial_print("Multiple IMU read failures, attempting re-init\n");
-                    int r = init_ICM42670();
-                    if (r == 0)
-                    {
-                        usb_serial_print("ICM re-init OK\n");
-                        if (ICM42670_start_with_default_values() != 0)
-                        {
-                            usb_serial_print("ICM42670_start_with_default_values returned non-zero after re-init\n");
-                        }
-                        read_fail_count = 0; // nollaa laskuri jos re-init onnistuu
-                    }
-                    else
-                    {
-                        char tmp[64];
-                        snprintf(tmp, sizeof(tmp), "ICM re-init failed (ret=%d) -> retrying later\n", r);
-                        usb_serial_print(tmp);
-                        // odota pidempään ennen seuraavaa re-init yritystä
-                        vTaskDelay(pdMS_TO_TICKS(2000));
-                    }
+                    motion_state = IDLE;
+                    vTaskDelay(pdMS_TO_TICKS(50));
                 }
             }
 
-            vTaskDelay(pdMS_TO_TICKS(100)); // odota ennen seuraavaa lukua
+            vTaskDelay(pdMS_TO_TICKS(50)); // lukunopeus ~20Hz
+        }
+        else
+        {
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
     }
 }
