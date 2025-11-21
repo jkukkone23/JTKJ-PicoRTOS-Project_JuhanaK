@@ -27,15 +27,13 @@
 volatile char rx_message[MAX_RX_LEN] = {0}; // globaali puskuri
 volatile bool rx_new = false;               // uusi viesti tullut vai ei, ASETETAAN TRUE KUN UUSI VIESTI
 
-/* Globaalit tehtävä-handlet jotta voidaan suspend/resumeata eli keskeyttää/jatkaaniitä */
-TaskHandle_t g_hDisplayTaskHandle = NULL;
-TaskHandle_t g_hLedsTaskHandle = NULL;
-TaskHandle_t g_hIMUTask = NULL;
+
 
 // Tilakoneen esittely ---- lisää puuttuvat tilat tarvittaessa
 // TILAT:
-// WAITING,         eli odotustila
+// WAITING,         eli odotustila, johon laite menee käynnistyessään
 // COLLECTING,      eli viestinkeräystila Pico W:ltä
+// MORSE_MSG_READY  eli morse-viesti on valmis lähetettäväksi koneeseen
 // MSG_RECEIVED,    eli viesti vastaanotettu tila
 // MSG_PRINT,       eli viestin tulostustila (morse-koodina)
 // MSG_PRINTED,     eli viestin tulostuksen jälkeinen tila
@@ -44,10 +42,12 @@ enum state
 {
     WAITING = 1,
     COLLECTING,
+    SYMBOL_DETECTED,
+    MORSE_MSG_READY,
     MSG_RECEIVED,
     MSG_PRINT,
     MSG_PRINTED,
-    SENT
+    MORSE_MSG_SENT
 };
 enum state programState = WAITING;
 
@@ -79,10 +79,14 @@ int main()
 
     // Alusta painike ja LED ja rekisteröi vastaava keskeytys tarvittaessa.
     // Keskeytyskäsittelijä on määritelty alapuolella nimellä btn_fxn
+    gpio_init(BUTTON1); 
+    gpio_set_dir(BUTTON1, GPIO_IN); 
+    gpio_set_irq_enabled_with_callback(BUTTON1, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
 
     TaskHandle_t hBuzzerTaskHandle = NULL;
     TaskHandle_t hPrintTask = NULL;
     TaskHandle_t hUsb = NULL;
+    TaskHandle_t hIMUTask = NULL;
 
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(print_task,         // Task function
@@ -111,7 +115,7 @@ int main()
         return 0;
     }
 
-    xTaskCreate(imu_task, "IMUTask", 1024, NULL, 2, &g_hIMUTask);
+    xTaskCreate(imu_task, "IMUTask", 1024, NULL, 2, &hIMUTask);
     xTaskCreate(usbTask, "usb", 1024, NULL, 3, &hUsb);
 #if (configNUMBER_OF_CORES > 1)
     vTaskCoreAffinitySet(hUsb, 1u << 0);
@@ -153,7 +157,7 @@ static void usbTask(void *arg)
  * Käyttäytyminen:
  * - Kun programState on MSG_RECEIVED tai MSG_PRINTED, soitetaan
  *   "Mission Impossible" -melodia LED- ja näyttöpalautteen kanssa.
- * - Kun programState on SENT, soitetaan "Hyvät, Pahat ja Rumat" -melodia.
+ * - Kun programState on MORSE_MSG_SENT, soitetaan "Hyvät, Pahat ja Rumat" -melodia.
  * - Melodiaa ennen LED/ näyttötehtävät keskeytetään
  *   ja sen jälkeen programState päivitetään ja LED-/näyttötehtävät
  *   palautetaan toimintaan.
@@ -188,8 +192,6 @@ static void buzzer_task(void *arg)
         // ---- MISSION IMPOSSIBLE TEEMA, KUN VIESTI SAAPUNUT/ TULOSTETTU ----
         if (programState == MSG_RECEIVED || programState == MSG_PRINTED)
         {
-            if (g_hIMUTask)
-                vTaskSuspend(g_hIMUTask);
 
             clear_display(); // tyhjennetään näyttö
 
@@ -238,16 +240,11 @@ static void buzzer_task(void *arg)
             else
                 programState = WAITING;
 
-            // palautetaan IMU tehtävä toimintaan
-            if (g_hIMUTask)
-                vTaskResume(g_hIMUTask);
         }
 
         // Tarkkaile tilaa
-        if (programState == SENT)
+        if (programState == MORSE_MSG_SENT)
         {
-            if (g_hIMUTask)
-                vTaskSuspend(g_hIMUTask); // TEE TILAKONEELLA JOTTA IMU PYSÄHTYY AUTOMAATTISESTI
 
             // ennen toistoa: keskeytä IMU taski, jotta se ei häiritse näyttöä
             clear_display();         // tyhjennetään näyttö
@@ -269,9 +266,6 @@ static void buzzer_task(void *arg)
             // palautetaan tila lähtöön
             programState = WAITING;
 
-            // palautetaan IMU tehtävä toimintaan
-            if (g_hIMUTask)
-                vTaskResume(g_hIMUTask);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // pollataan tila 10 kertaa sekunnissa
@@ -316,11 +310,6 @@ static void print_task(void *arg)
             // Tyhjennä lipuke heti (estää uudelleenkäsittelyn)
             rx_new = false;
 
-            // ennen toistoa: keskeytä display ja leds taskit, jotta ne eivät piirrä tai välkytä
-            if (g_hDisplayTaskHandle)
-                vTaskSuspend(g_hDisplayTaskHandle);
-            if (g_hLedsTaskHandle)
-                vTaskSuspend(g_hLedsTaskHandle);
 
             // Tyhjennä näyttö
             clear_display();
@@ -399,11 +388,6 @@ static void print_task(void *arg)
                     vTaskDelay(pdMS_TO_TICKS(unit_ms));
                 }
             }
-            // palautetaan display ja leds toimintaan
-            if (g_hDisplayTaskHandle)
-                vTaskResume(g_hDisplayTaskHandle);
-            if (g_hLedsTaskHandle)
-                vTaskResume(g_hLedsTaskHandle);
 
             // Kun esitys valmis, vaihdetaan tila MSG_PRINTED
             programState = MSG_PRINTED;
@@ -415,41 +399,18 @@ static void print_task(void *arg)
     }
 }
 
-/*void imu_task(void *pvParameters) {
-    (void)pvParameters;
+// ---- Painikkeen keskeytyskäsittelijä ----
+// Painiketta painettaessa vaihdetaan tila WAITING -> COLLECTING
 
+static void btn_fxn(uint gpio, uint32_t eventMask){
+    (void)gpio;
+    (void)eventMask;
 
-    float ax, ay, az, gx, gy, gz, t;
-    // Setting up the sensor.
-    if (init_ICM42670() == 0) {
-        usb_serial_print("ICM-42670P initialized successfully!\n");
-        if (ICM42670_start_with_default_values() != 0){
-            usb_serial_print("ICM-42670P could not initialize accelerometer or gyroscope");
-        }
-        /*int _enablegyro = ICM42670_enable_accel_gyro_ln_mode();
-        usb_serial_print ("Enable gyro: %d\n",_enablegyro);
-        int _gyro = ICM42670_startGyro(ICM42670_GYRO_ODR_DEFAULT, ICM42670_GYRO_FSR_DEFAULT);
-        usb_serial_print ("Gyro return:  %d\n", _gyro);
-        int _accel = ICM42670_startAccel(ICM42670_ACCEL_ODR_DEFAULT, ICM42670_ACCEL_FSR_DEFAULT);
-        usb_serial_print ("Accel return:  %d\n", _accel);
-    } else {
-        usb_serial_print("Failed to initialize ICM-42670P.\n");
+    // Vain jos ollaan WAITING tilassa, vaihdetaan COLLECTING tilaan
+    if (programState == WAITING){
+        programState = COLLECTING;
     }
-    // Start collection data here. Infinite loop.
-    uint8_t buf[BUFFER_SIZE];
-    while (1)
-    {
-        if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &t) == 0) {
-            sprintf(buf,"Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f| Temp: %2.2f°C\n", ax, ay, az, gx, gy, gz, t);
-            usb_serial_print(buf);
-
-        } else {
-            usb_serial_print("Failed to read imu data\n");
-        }
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-
-}*/
+}
 
 // IMU TEHTÄVÄSSÄ OLLAAN KUN COLLECTING ON OHJELMAN TILANA
 
@@ -484,7 +445,7 @@ void imu_task(void *pvParameters)
         {
             snprintf(outbuf, sizeof(outbuf), "ICM init failed (ret=%d), retrying in 2s\n", r);
             usb_serial_print(outbuf);
-            vTaskDelay(pdMS_TO_TICKS(2000)); // odota ennen uutta yritystä
+            vTaskDelay(pdMS_TO_TICKS(2000)); // odottaa ennen uutta yritystä
         }
     }
 
@@ -494,47 +455,50 @@ void imu_task(void *pvParameters)
 
     while (1)
     {
-        int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
-        if (rr == 0)
+        if (programState == COLLECTING)
         {
-
-            // Tulosta kelvolliset arvot
-            snprintf(outbuf, sizeof(outbuf),
-                     "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Temp: %.2f°C\n",
-                     ax, ay, az, gx, gy, gz, temp);
-            usb_serial_print(outbuf);
-            // nollaa epäonnistumislaskuri onnistuneen lukemisen jälkeen
-            read_fail_count = 0;
-        }
-        else
-        {
-            // Lukeminen epäonnistui: kirjaa ja kasvata laskuria
-            snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
-            usb_serial_print(outbuf);
-            read_fail_count++;
-        }
-
-        // Jos lukemisia epäonnistuu liian monta kertaa peräkkäin, yritä uudelleen-init
-        if (read_fail_count >= READ_FAIL_MAX)
-        {
-            usb_serial_print("Multiple IMU read failures, attempting re-init\n");
-            int r = init_ICM42670();
-            if (r == 0)
+            int rr = ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp);
+            if (rr == 0)
             {
-                usb_serial_print("ICM re-init OK\n");
-                if (ICM42670_start_with_default_values() != 0)
-                {
-                    usb_serial_print("ICM42670_start_with_default_values returned non-zero after re-init\n");
-                }
-                read_fail_count = 0; // nollaa laskuri jos re-init onnistuu
+
+                // Tulosta kelvolliset arvot
+                snprintf(outbuf, sizeof(outbuf),
+                         "Accel: X=%.2f, Y=%.2f, Z=%.2f | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Temp: %.2f°C\n",
+                         ax, ay, az, gx, gy, gz, temp);
+                usb_serial_print(outbuf);
+                // nollaa epäonnistumislaskuri onnistuneen lukemisen jälkeen
+                read_fail_count = 0;
             }
             else
             {
-                char tmp[64];
-                snprintf(tmp, sizeof(tmp), "ICM re-init failed (ret=%d) -> retrying later\n", r);
-                usb_serial_print(tmp);
-                // odota pidempään ennen seuraavaa re-init yritystä
-                vTaskDelay(pdMS_TO_TICKS(2000));
+                // Lukeminen epäonnistui: kirjaa ja kasvata laskuria
+                snprintf(outbuf, sizeof(outbuf), "IMU read failed (ret=%d)\n", rr);
+                usb_serial_print(outbuf);
+                read_fail_count++;
+            }
+
+            // Jos lukemisia epäonnistuu liian monta kertaa peräkkäin, yritä uudelleen-init
+            if (read_fail_count >= READ_FAIL_MAX)
+            {
+                usb_serial_print("Multiple IMU read failures, attempting re-init\n");
+                int r = init_ICM42670();
+                if (r == 0)
+                {
+                    usb_serial_print("ICM re-init OK\n");
+                    if (ICM42670_start_with_default_values() != 0)
+                    {
+                        usb_serial_print("ICM42670_start_with_default_values returned non-zero after re-init\n");
+                    }
+                    read_fail_count = 0; // nollaa laskuri jos re-init onnistuu
+                }
+                else
+                {
+                    char tmp[64];
+                    snprintf(tmp, sizeof(tmp), "ICM re-init failed (ret=%d) -> retrying later\n", r);
+                    usb_serial_print(tmp);
+                    // odota pidempään ennen seuraavaa re-init yritystä
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                }
             }
         }
 
