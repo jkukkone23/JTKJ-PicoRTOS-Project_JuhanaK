@@ -406,9 +406,22 @@ static void btn_fxn(uint gpio, uint32_t eventMask){
     (void)gpio;
     (void)eventMask;
 
-    // Vain jos ollaan WAITING tilassa, vaihdetaan COLLECTING tilaan
-    if (programState == WAITING){
-        programState = COLLECTING;
+    // Painnikkeen havaittua muutetaan laitteen tilaa SWITCH rakenteen avulla
+
+    switch (programState)
+    {
+        case WAITING:
+            programState = COLLECTING;
+            break;
+
+        case COLLECTING:
+            programState = MORSE_MSG_READY;
+            break;
+
+        default:
+        programState = WAITING;
+            // muissa tiloissa nappi keskeyttää toiminnan ja palauttaa WAITING-tilaan
+            break;
     }
 }
 
